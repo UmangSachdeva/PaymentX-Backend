@@ -1,0 +1,35 @@
+.qodo
+.env# Ignore editor and system files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Ignore environment files
+.env
+
+# Ignore build and dependency directories
+node_modules/
+bin/
+obj/
+vendor/
+
+# Ignore log files
+*.log
+
+# Ignore temporary files
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+
+# Ignore Go-specific files
+*.out
+*.test
+coverage.out
+
+# Ignore Plaid and MongoDB configuration files (if applicable)
+.qodo
