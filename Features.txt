@@ -1,0 +1,4 @@
+1. Add a upload history to delete if uploaded a wrong pdf or csv
+2. Add graph to show analysis 
+3. Integrate Gemini for advance analysis
+4. Add budget goals and give reminders on that day

@@ -15,5 +15,7 @@ func PaymentRouter() *mux.Router {
 	restricted := r.PathPrefix("/").Subrouter()
 	restricted.Use(middleware.AuthenticationMiddleware)
 	restricted.HandleFunc("/transactions", handlers.InputTransactionData).Methods("POST", "OPTIONS")
+	restricted.HandleFunc("/transactions", handlers.GetUserTransaction).Methods("GET", "OPTIONS")
+	restricted.HandleFunc("/transactions/analysis", handlers.GetTransactionAnalysis).Methods("GET", "OPTIONS")
 	return r
 }
