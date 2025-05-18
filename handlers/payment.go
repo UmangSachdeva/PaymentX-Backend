@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,8 +19,16 @@ import (
 	"github.com/plaid/plaid-go/v32/plaid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+func generateHash(txn models.Transaction) string {
+	key := fmt.Sprintf("%s|%s|%s|%s|%s", txn.TransactionDate.Time().Format(time.RFC3339), txn.Amount, txn.Details, txn.TransactionTime, txn.UserID)
+    hash := sha256.Sum256([]byte(key))
+    return hex.EncodeToString(hash[:])
+}
+
 
 func convertStringToDateTime(dateStr string) (primitive.DateTime, error) {
 	if dateStr == "" {
@@ -195,6 +205,7 @@ func InputTransactionData(w http.ResponseWriter, r *http.Request) {
 	var transactionInterface []interface{}
 
 	for i := range transactionsArr {
+		transactionsArr[i].TransactionID = generateHash(transactionsArr[i])
 		transactionsArr[i].UserID = userDB.ID
 		transactionInterface = append(transactionInterface, transactionsArr[i])
 	}
@@ -208,7 +219,25 @@ func InputTransactionData(w http.ResponseWriter, r *http.Request) {
 	defer client.Disconnect(context.Background())
 
 	collection := client.Database("paymentx").Collection("transactions")
-	_, err = collection.InsertMany(context.Background(), transactionInterface)
+	// Insert many, skip duplicates based on TransactionID (unique index recommended on TransactionID)
+	opts := options.InsertMany().SetOrdered(false)
+	_, err = collection.InsertMany(context.Background(), transactionInterface, opts)
+	if err != nil {
+		// If error is due to duplicate key, ignore it (continue)
+		if we, ok := err.(mongo.BulkWriteException); ok {
+			// Check if all errors are duplicate key errors
+			allDup := true
+			for _, writeErr := range we.WriteErrors {
+				if writeErr.Code != 11000 {
+					allDup = false
+					break
+				}
+			}
+			if allDup {
+				err = nil // ignore duplicate key errors
+			}
+		}
+	}
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

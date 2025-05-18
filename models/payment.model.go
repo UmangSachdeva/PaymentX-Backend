@@ -9,6 +9,9 @@ const (
 	Credit TransactionType = "CREDIT"
 )
 
+// Transaction represents a unique transaction in the database.
+// To ensure uniqueness, you should create a unique index in MongoDB on relevant fields.
+// For example, you can create a unique index on (UserID, TransactionDate, Amount, Details, Type).
 type Transaction struct {
 	ID              primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
 	UserID          primitive.ObjectID `json:"user_id,omitempty" bson:"user_id,omitempty"`
@@ -19,4 +22,5 @@ type Transaction struct {
 	Details         string             `json:"details"`
 	Type            TransactionType    `json:"type"`
 	Balance         float64            `json:"balance"`
+	TransactionID   string				`json:"transaction_id"`
 }
