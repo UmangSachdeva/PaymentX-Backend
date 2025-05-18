@@ -23,7 +23,7 @@ func main() {
 
 	r.PathPrefix("/").Handler(http.StripPrefix("/api/v1/payments", paymentRouter))
 
-	log.Fatal(http.ListenAndServe(":5000", r))
+	log.Fatal(http.ListenAndServe(":5001", r))
 
-	fmt.Println("Listening on port 5000")
+	fmt.Println("Listening on port 5001")
 }

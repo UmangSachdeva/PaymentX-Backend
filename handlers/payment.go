@@ -272,7 +272,7 @@ func GetUserTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sort := map[string]interface{}{
-		"transactiondate": 1,
+		"transactiondate": -1,
 	}
 
 	collection := client.Database("paymentx").Collection("transactions")
@@ -351,18 +351,29 @@ func GetTransactionAnalysis(w http.ResponseWriter, r *http.Request) {
 	opts := options.Find().SetSort(bson.M{"transactiondate": 1})
 
 	// Set the date range filter
+	filter := bson.M{}
 	daterange := bson.M{}
 
 	if r.URL.Query().Get("start_date") != "" {
 		daterange["$gte"] = startDate
+		filter["transactiondate"] = daterange
 	}
 
 	if r.URL.Query().Get("end_date") != "" {
 		daterange["$lte"] = endDate
+		filter["transactiondate"] = daterange
 	}
 
+	if r.URL.Query().Get("type") != "" {
+		filter["type"] = r.URL.Query().Get("type")
+	}
+
+	filter["user_id"] = userDB.ID
+
+	fmt.Println(bson.M{"filter": filter})	
+
 	collection := client.Database("paymentx").Collection("transactions")
-	cursor, err := collection.Find(context.Background(), bson.M{"user_id": userDB.ID, "transactiondate": daterange}, opts)
+	cursor, err := collection.Find(context.Background(), filter, opts)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -386,4 +397,592 @@ func GetTransactionAnalysis(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func GetMonthlyTransactions(w http.ResponseWriter, r *http.Request){
+	client, err := config.ConnectToMongo();
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return;
+	}
+
+	defer client.Disconnect(context.Background())
+
+	userContext := cont.Get(r, "user")
+	userDB, err := GetUserFromContext(userContext)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	collection := client.Database("paymentx").Collection("transactions")
+
+	tp := r.URL.Query().Get("type")
+	if tp == "" {
+		tp = "DEBIT"
+	}
+
+	
+	// Group by year and month extracted from transactiondate (which is a date/time field)
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{"user_id": userDB.ID, "type": tp}},
+		bson.M{"$group": bson.M{
+			"_id": bson.M{
+				"year":  bson.M{"$year": "$transactiondate"},
+				"month": bson.M{"$month": "$transactiondate"},
+			},
+			"total_spend": bson.M{"$sum": "$amount"},
+		}},
+		bson.M{"$sort": bson.M{"_id.year": 1, "_id.month": 1}},
+	}
+
+	cursor, err := collection.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	type MonthlySpend struct {
+		Year       int     `json:"year"`
+		Month      int     `json:"month"`
+		TotalSpend float64 `json:"total_spend"`
+	}
+
+	var results []MonthlySpend
+	for cursor.Next(context.Background()) {
+		var doc struct {
+			ID struct {
+				Year  int `bson:"year"`
+				Month int `bson:"month"`
+			} `bson:"_id"`
+			TotalSpend float64 `bson:"total_spend"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		results = append(results, MonthlySpend{
+			Year:       doc.ID.Year,
+			Month:      doc.ID.Month,
+			TotalSpend: doc.TotalSpend,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
+func GetUserAverageMonthlySpend(w http.ResponseWriter, r *http.Request){
+	client, err := config.ConnectToMongo()
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	defer client.Disconnect(context.Background())
+
+	userContext := cont.Get(r, "user")
+	userDB, err := GetUserFromContext(userContext)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	collection := client.Database("paymentx").Collection("transactions")
+
+	// Parse year and month from query params, default to current if not provided
+	yearStr := r.URL.Query().Get("year")
+	monthStr := r.URL.Query().Get("month")
+	if yearStr == "" || monthStr == "" {
+		now := time.Now()
+		if yearStr == "" {
+			yearStr = fmt.Sprintf("%d", now.Year())
+		}
+		if monthStr == "" {
+			monthStr = fmt.Sprintf("%d", int(now.Month()))
+		}
+	}
+	year, err := strconv.Atoi(yearStr)
+	if err != nil {
+		http.Error(w, "invalid year", http.StatusBadRequest)
+		return
+	}
+	month, err := strconv.Atoi(monthStr)
+	if err != nil {
+		http.Error(w, "invalid month", http.StatusBadRequest)
+		return
+	}
+
+	tp := r.URL.Query().Get("type")
+	if tp == "" {
+		tp = "DEBIT"
+	}
+
+	// Pipeline for current month
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{
+			"user_id": userDB.ID,
+			"type":    tp,
+			"$expr": bson.M{
+				"$and": bson.A{
+					bson.M{"$eq": bson.A{bson.M{"$year": "$transactiondate"}, year}},
+					bson.M{"$eq": bson.A{bson.M{"$month": "$transactiondate"}, month}},
+				},
+			},
+		}},
+		bson.M{"$group": bson.M{
+			"_id": bson.M{
+				"year":  bson.M{"$year": "$transactiondate"},
+				"month": bson.M{"$month": "$transactiondate"},
+				"day":   bson.M{"$dayOfMonth": "$transactiondate"},
+			},
+			"daily_spend": bson.M{"$sum": "$amount"},
+		}},
+		bson.M{"$group": bson.M{
+			"_id": bson.M{
+				"year":  "$_id.year",
+				"month": "$_id.month",
+			},
+			"average_daily_spend": bson.M{"$avg": "$daily_spend"},
+		}},
+	}
+
+	cursor, err := collection.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var currentMonthAvg float64
+	for cursor.Next(context.Background()) {
+		var doc struct {
+			ID struct {
+				Year  int `bson:"year"`
+				Month int `bson:"month"`
+			} `bson:"_id"`
+			AverageDailySpend float64 `bson:"average_daily_spend"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		currentMonthAvg = doc.AverageDailySpend
+	}
+
+	// Pipeline for previous month
+	prevYear := year
+	prevMonth := month - 1
+	if prevMonth == 0 {
+		prevMonth = 12
+		prevYear = year - 1
+	}
+	prevPipeline := bson.A{
+		bson.M{"$match": bson.M{
+			"user_id": userDB.ID,
+			"type":    tp,
+			"$expr": bson.M{
+				"$and": bson.A{
+					bson.M{"$eq": bson.A{bson.M{"$year": "$transactiondate"}, prevYear}},
+					bson.M{"$eq": bson.A{bson.M{"$month": "$transactiondate"}, prevMonth}},
+				},
+			},
+		}},
+		bson.M{"$group": bson.M{
+			"_id": bson.M{
+				"year":  bson.M{"$year": "$transactiondate"},
+				"month": bson.M{"$month": "$transactiondate"},
+				"day":   bson.M{"$dayOfMonth": "$transactiondate"},
+			},
+			"daily_spend": bson.M{"$sum": "$amount"},
+		}},
+		bson.M{"$group": bson.M{
+			"_id": bson.M{
+				"year":  "$_id.year",
+				"month": "$_id.month",
+			},
+			"average_daily_spend": bson.M{"$avg": "$daily_spend"},
+		}},
+	}
+
+	prevCursor, err := collection.Aggregate(context.Background(), prevPipeline)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer prevCursor.Close(context.Background())
+
+	var prevMonthAvg float64
+	for prevCursor.Next(context.Background()) {
+		var doc struct {
+			ID struct {
+				Year  int `bson:"year"`
+				Month int `bson:"month"`
+			} `bson:"_id"`
+			AverageDailySpend float64 `bson:"average_daily_spend"`
+		}
+		if err := prevCursor.Decode(&doc); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		prevMonthAvg = doc.AverageDailySpend
+	}
+
+	percentageChange := 0.0
+	if prevMonthAvg != 0 {
+		percentageChange = ((currentMonthAvg - prevMonthAvg) / prevMonthAvg) * 100
+	}
+
+	type Result struct {
+		Year              int     `json:"year"`
+		Month             int     `json:"month"`
+		AverageDailySpend float64 `json:"average_daily_spend"`
+		PercentageChange  float64 `json:"percentage_change"`
+	}
+
+	result := Result{
+		Year:              year,
+		Month:             month,
+		AverageDailySpend: currentMonthAvg,
+		PercentageChange:  percentageChange,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func MonthlyWeeklyPattern(w http.ResponseWriter, r *http.Request){
+	client, err := config.ConnectToMongo();
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return;
+	}
+
+	defer client.Disconnect(context.Background())
+
+	userContext := cont.Get(r, "user")
+	userDB, err := GetUserFromContext(userContext)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	collection := client.Database("paymentx").Collection("transactions")
+
+	// Parse year and month from query params, default to current if not provided
+	yearStr := r.URL.Query().Get("year")
+	monthStr := r.URL.Query().Get("month")
+	now := time.Now()
+	if yearStr == "" {
+		yearStr = fmt.Sprintf("%d", now.Year())
+	}
+	if monthStr == "" {
+		monthStr = fmt.Sprintf("%d", int(now.Month()))
+	}
+	year, err := strconv.Atoi(yearStr)
+	if err != nil {
+		http.Error(w, "invalid year", http.StatusBadRequest)
+		return
+	}
+	month, err := strconv.Atoi(monthStr)
+	if err != nil {
+		http.Error(w, "invalid month", http.StatusBadRequest)
+		return
+	}
+
+	tp := r.URL.Query().Get("type")
+	if tp == "" {
+		tp = "DEBIT"
+	}
+
+	// Group by year, month, week extracted from transactiondate, filter by year and month
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{
+			"user_id": userDB.ID,
+			"type":    tp,
+			"$expr": bson.M{
+				"$and": bson.A{
+					bson.M{"$eq": bson.A{bson.M{"$year": "$transactiondate"}, year}},
+					bson.M{"$eq": bson.A{bson.M{"$month": "$transactiondate"}, month}},
+				},
+			},
+		}},
+		bson.M{"$group": bson.M{
+			"_id": bson.M{
+				"year":      bson.M{"$year": "$transactiondate"},
+            "month":     bson.M{"$month": "$transactiondate"},
+				"dayOfWeek": bson.M{"$dayOfWeek": "$transactiondate"},
+			},
+			"total_spend": bson.M{"$sum": "$amount"},
+		}},
+		bson.M{"$sort": bson.M{"_id.dayOfWeek": 1}},
+	}
+
+	cursor, err := collection.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	type WeeklySpend struct {
+		Year         int               `json:"year"`
+		Month        int               `json:"month"`
+		DayOfWeek    int               `json:"day_of_week"`
+		TotalSpend   float64           `json:"total_spend"`
+	}
+
+	var results []WeeklySpend
+	for cursor.Next(context.Background()) {
+		var doc struct {
+			ID struct {
+				Year      int `bson:"year"`
+				Month     int `bson:"month"`
+				DayOfWeek int `bson:"dayOfWeek"`
+			} `bson:"_id"`
+			TotalSpend   float64           `bson:"total_spend"`
+	
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		results = append(results, WeeklySpend{
+			Year:         doc.ID.Year,
+			Month:        doc.ID.Month,
+			DayOfWeek:    doc.ID.DayOfWeek,
+			TotalSpend:   doc.TotalSpend,
+
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+
+}
+
+func GetSpendingTimeAnalysis(w http.ResponseWriter, r *http.Request) {
+	client, err := config.ConnectToMongo()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer client.Disconnect(context.Background())
+
+	userContext := cont.Get(r, "user")
+	userDB, err := GetUserFromContext(userContext)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	collection := client.Database("paymentx").Collection("transactions")
+
+	tp := r.URL.Query().Get("type")
+	if tp == "" {
+		tp = "DEBIT"
+	}
+
+	// Group by hour of the day
+	// Pipeline to group by hour and get each transaction's amount for scatter plot
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{
+			"user_id": userDB.ID,
+			"type":    tp,
+		}},
+		bson.M{"$addFields": bson.M{
+			"hour24": bson.M{
+				"$let": bson.M{
+					"vars": bson.M{
+						"timeParts": bson.M{"$split": bson.A{"$transactiontime", " "}},
+						"hourMinute": bson.M{"$split": bson.A{
+							bson.M{"$arrayElemAt": bson.A{
+								bson.M{"$split": bson.A{"$transactiontime", " "}}, 0,
+							}},
+							":",
+						}},
+						"ampm": bson.M{"$arrayElemAt": bson.A{
+							bson.M{"$split": bson.A{"$transactiontime", " "}}, 1,
+						}},
+					},
+					"in": bson.M{
+						"$let": bson.M{
+							"vars": bson.M{
+								"hour": bson.M{"$toInt": bson.M{"$arrayElemAt": bson.A{"$$hourMinute", 0}}},
+							},
+							"in": bson.M{
+								"$cond": bson.A{
+									bson.M{"$eq": bson.A{"$$ampm", "AM"}},
+									bson.M{
+										"$cond": bson.A{
+											bson.M{"$eq": bson.A{"$$hour", 12}},
+											0,
+											"$$hour",
+										},
+									},
+									bson.M{
+										"$cond": bson.A{
+											bson.M{"$eq": bson.A{"$$hour", 12}},
+											12,
+											bson.M{"$add": bson.A{"$$hour", 12}},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
+		bson.M{"$project": bson.M{
+			"hour":   "$hour24",
+			"amount": 1,
+			"_id":    0,
+		}},
+		bson.M{"$sort": bson.M{"hour": 1}},
+	}
+
+	cursor, err := collection.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	type TimeAnalysis struct {
+		Hour   int     `json:"hour"`
+		Amount float64 `json:"amount"`
+	}
+
+	var results []TimeAnalysis
+	for cursor.Next(context.Background()) {
+		var doc struct {
+			Hour   int     `bson:"hour"`
+			Amount float64 `bson:"amount"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		results = append(results, TimeAnalysis{
+			Hour:   doc.Hour,
+			Amount: doc.Amount,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
+func GetDebitVsCredit(w http.ResponseWriter, r *http.Request) {
+	client, err := config.ConnectToMongo()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer client.Disconnect(context.Background())
+
+	userContext := cont.Get(r, "user")
+	userDB, err := GetUserFromContext(userContext)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	collection := client.Database("paymentx").Collection("transactions")
+
+	// Parse year from query params, default to current year if not provided
+	yearStr := r.URL.Query().Get("year")
+	now := time.Now()
+	if yearStr == "" {
+		yearStr = fmt.Sprintf("%d", now.Year())
+	}
+	year, err := strconv.Atoi(yearStr)
+	if err != nil {
+		http.Error(w, "invalid year", http.StatusBadRequest)
+		return
+	}
+
+	// Group by month and type for the given year
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{
+			"user_id": userDB.ID,
+			"$expr": bson.M{
+				"$eq": bson.A{bson.M{"$year": "$transactiondate"}, year},
+			},
+		}},
+		bson.M{"$group": bson.M{
+			"_id": bson.M{
+				"month": bson.M{"$month": "$transactiondate"},
+				"type":  "$type",
+			},
+			"total": bson.M{"$sum": "$amount"},
+		}},
+		bson.M{"$sort": bson.M{"_id.month": 1}},
+	}
+
+	cursor, err := collection.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	type MonthResult struct {
+		Month  int     `json:"month"`
+		Debit  float64 `json:"debit"`
+		Credit float64 `json:"credit"`
+	}
+	// Map of month to MonthResult
+	monthMap := make(map[int]*MonthResult)
+
+	for cursor.Next(context.Background()) {
+		var doc struct {
+			ID struct {
+				Month int    `bson:"month"`
+				Type  string `bson:"type"`
+			} `bson:"_id"`
+			Total float64 `bson:"total"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		m, ok := monthMap[doc.ID.Month]
+		if !ok {
+			m = &MonthResult{Month: doc.ID.Month}
+			monthMap[doc.ID.Month] = m
+		}
+		if doc.ID.Type == "DEBIT" {
+			m.Debit = doc.Total
+		} else if doc.ID.Type == "CREDIT" {
+			m.Credit = doc.Total
+		}
+	}
+
+	// Prepare results for all 12 months (fill missing months with zero)
+	var results []MonthResult
+	for i := 1; i <= 12; i++ {
+		if m, ok := monthMap[i]; ok {
+			results = append(results, *m)
+		} else {
+			results = append(results, MonthResult{Month: i, Debit: 0, Credit: 0})
+		}
+	}
+
+	type Response struct {
+		Year    int           `json:"year"`
+		Results []MonthResult `json:"results"`
+	}
+
+	resp := Response{
+		Year:    year,
+		Results: results,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }

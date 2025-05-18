@@ -17,6 +17,7 @@ func Router() *mux.Router {
 
 	restricted.HandleFunc("/api/v1/auth/user/{id}", handlers.UpdateUser).Methods("PATCH", "OPTIONS")
 	restricted.HandleFunc("/api/v1/auth/users", handlers.GetAllUsers).Methods("GET", "OPTIONS")
+	restricted.HandleFunc("/api/v1/auth", handlers.GetUserDetails).Methods("GET", "OPTIONS")
 	restricted.Use(middleware.AuthenticationMiddleware)
 
 	return r

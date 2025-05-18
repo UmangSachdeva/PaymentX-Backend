@@ -3,7 +3,6 @@ package utils
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/dgrijalva/jwt-go"
 )
@@ -15,7 +14,7 @@ func GenerateToken(userId string) (string, error) {
 	claims := jwt.MapClaims{}
 	claims["user_id"] = userId
 	fmt.Println(userId)
-	claims["exp"] = time.Now().Add(time.Hour * 1).Unix()
+	// claims["exp"] = time.Now().Add(time.Hour * 1).Unix()
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(secretkey)

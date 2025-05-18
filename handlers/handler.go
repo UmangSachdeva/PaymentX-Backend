@@ -319,3 +319,42 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(result)
 }
+
+func GetUserDetails(w http.ResponseWriter, r *http.Request){
+	client, err := config.ConnectToMongo();
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError);
+		return;
+	}
+
+	defer client.Disconnect(context.Background());
+
+	var userContext = cont.Get(r, "user");
+
+	if userContext == nil {
+		http.Error(w, "User Not authenticated", http.StatusUnauthorized)
+		return;
+	}
+
+	userDB, err := GetUserFromContext(userContext);
+
+	if err != nil {
+		http.Error(w, "No User Found", http.StatusNotFound)
+	}
+
+	type Response struct {
+		Status   string `json:"status"`
+		Name string `json:"username"`
+		Email    string `json:"email"`
+	}
+
+	resp := Response{
+		Status: "success",
+		Name: userDB.Name,
+		Email: userDB.Email,
+	}
+
+	w.Header().Add("Content-type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}

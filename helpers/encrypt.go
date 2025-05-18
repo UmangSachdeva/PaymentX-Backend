@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"fmt"
 	"os"
 )
 
@@ -14,6 +15,7 @@ func Encode(b []byte) string {
 }
 
 func Encrypt(randomString string) (string, error) {
+	fmt.Print(os.Getenv("SECRET"))
 	block, err := aes.NewCipher([]byte(os.Getenv("SECRET")))
 
 	if err != nil {
