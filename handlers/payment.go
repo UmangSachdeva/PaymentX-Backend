@@ -24,9 +24,15 @@ import (
 )
 
 func generateHash(txn models.Transaction) string {
-	key := fmt.Sprintf("%s|%s|%s|%s|%s", txn.TransactionDate.Time().Format(time.RFC3339), txn.Amount, txn.Details, txn.TransactionTime, txn.UserID)
-    hash := sha256.Sum256([]byte(key))
-    return hex.EncodeToString(hash[:])
+	key := fmt.Sprintf("%s|%s|%s|%s|%s",
+		txn.TransactionDate.Time().Format(time.RFC3339),
+		fmt.Sprintf("%v", txn.Amount),
+		txn.Details,
+		txn.TransactionTime,
+		txn.UserID,
+	)
+	hash := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(hash[:])
 }
 
 
